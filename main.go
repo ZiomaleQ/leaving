@@ -2,8 +2,10 @@ package main
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"sync"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	prog "github.com/gosuri/uiprogress"
@@ -22,6 +24,11 @@ func main() {
 
 	mainUrl := os.Args[1]
 	dir := os.Args[2]
+
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		fmt.Println("Katalog nie istnieje, tworzę...")
+		os.Mkdir(dir, fs.ModePerm)
+	}
 
 	choices, err := getSeasons(mainUrl)
 
@@ -49,6 +56,8 @@ func main() {
 		fmt.Println("Nie wybrano żadnego sezonu.")
 		os.Exit(1)
 	}
+
+	startTime := time.Now()
 
 	for _, series := range chosenSeries {
 
@@ -80,4 +89,6 @@ func main() {
 
 		prog.Stop()
 	}
+
+	fmt.Println("Zajęło: " + time.Now().Sub(startTime).String())
 }
