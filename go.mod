@@ -7,7 +7,7 @@ require github.com/charmbracelet/bubbletea v0.25.0
 require (
 	github.com/andybalholm/cascadia v1.3.2 // indirect
 	github.com/gosuri/uilive v0.0.4 // indirect
-	github.com/gosuri/uiprogress v0.0.1 // indirect
+	github.com/gosuri/uiprogress v0.0.1
 	golang.org/x/net v0.21.0 // indirect
 )
 

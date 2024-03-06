@@ -16,12 +16,12 @@ type entry struct {
 
 func main() {
 	if len(os.Args) < 2 {
-		println("Usage: " + os.Args[0] + " https://<anime>.wbijam.pl")
+		println("Usage: " + os.Args[0] + " https://<anime>.wbijam.pl <dir>")
 		os.Exit(1)
 	}
 
 	mainUrl := os.Args[1]
-	// dir := os.Args[2]
+	dir := os.Args[2]
 
 	choices, err := getSeasons(mainUrl)
 
@@ -63,19 +63,17 @@ func main() {
 		}
 
 		for _, ep := range eps {
-			// bar := prog.AddBar(100).AppendCompleted().PrependElapsed()
-
 			wg.Add(1)
 
-			// go func(ep animeEp) {
-			// 	defer wg.Done()
-			if ep.GetMediaURL() == "" {
-				fmt.Println("Nie udało się pobrać linku do odcinka")
-			}
-			// ep.Download(dir, len(eps), bar)
-			// }(ep)
+			go func(ep animeEp) {
+				defer wg.Done()
 
-			break
+				err = ep.Download(dir, len(eps))
+
+				if err != nil {
+					fmt.Printf("Nie udało się pobrać odcinka, error: %v", err)
+				}
+			}(ep)
 		}
 
 		wg.Wait()

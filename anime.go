@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -21,8 +22,7 @@ func getSeasons(url string) ([]entry, error) {
 	req, err := http.NewRequest("GET", url, nil)
 
 	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
+		return nil, err
 	}
 
 	client := &http.Client{}
@@ -71,6 +71,31 @@ func getSeasons(url string) ([]entry, error) {
 	return choices, nil
 }
 
+func FetchAndParse(url string, client *http.Client) (*goquery.Document, error) {
+	req, err := http.NewRequest("GET", url, nil)
+
+	if err != nil {
+		return nil, errors.New("error creating request")
+	}
+
+	resp, err := client.Do(req)
+
+	if err != nil {
+		return nil, errors.New("error getting page")
+	}
+
+	defer resp.Body.Close()
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+
+	if err != nil {
+		return nil, errors.New("error parsing page")
+	}
+
+	return doc, nil
+
+}
+
 type animeEp struct {
 	url  string
 	name string
@@ -78,166 +103,142 @@ type animeEp struct {
 }
 
 func (ep *animeEp) GetName(max int) string {
-	format := "%0" + fmt.Sprint((len(strconv.Itoa(max)))) + "d - %v\n"
+	format := "%0" + fmt.Sprint((len(strconv.Itoa(max)))) + "d - %v"
 
 	return fmt.Sprintf(format, ep.num, ep.name)
 }
 
-type Video struct {
-	File string `json:"file"`
-}
-
-func (ep *animeEp) GetMediaURL() string {
-	req, err := http.NewRequest("GET", ep.url, nil)
-
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
-	}
-
+func (ep *animeEp) GetMediaURL() (string, error) {
 	client := &http.Client{}
-	episodeResp, err := client.Do(req)
+
+	doc, err := FetchAndParse(ep.url, client)
 
 	if err != nil {
-		return ""
-	}
-
-	defer episodeResp.Body.Close()
-
-	doc, err := goquery.NewDocumentFromReader(episodeResp.Body)
-
-	if err != nil {
-		return ""
+		return "", errors.New("error parsing episode page")
 	}
 
 	episodeTable := doc.Find("tbody").Children()
 
 	playerUrl := ""
 
-	for i := 0; i < episodeTable.Length(); i++ {
-		episodeRow := episodeTable.Eq(i)
+	baseUrl, err := url.Parse(ep.url)
 
-		if strings.TrimSpace(episodeRow.Eq(3).Text()) == "cda" {
-			playerUrl = ep.url + "/odtwarzacz-" + episodeRow.Find(".odtwarzacz_link").AttrOr("rel", "") + ".html"
+	if err != nil {
+		return "", err
+	}
+
+	for i := 0; i < episodeTable.Length(); i++ {
+		episodeRow := episodeTable.Eq(i).Children()
+
+		if strings.TrimSpace(episodeRow.Eq(2).Text()) == "cda" {
+			playerUrl = baseUrl.Scheme + "://" + baseUrl.Host + "/" + "/odtwarzacz-" + episodeRow.Find(".odtwarzacz_link").AttrOr("rel", "") + ".html"
 			break
 		}
 	}
 
 	if playerUrl == "" {
-		return ""
+		return "", errors.New("no wbijam cda player found")
 	}
 
-	req, err = http.NewRequest("GET", playerUrl, nil)
+	doc, err = FetchAndParse(playerUrl, client)
 
 	if err != nil {
-		return ""
+		return "", errors.New("error parsing player page")
 	}
 
-	episodePlayerResp, err := client.Do(req)
+	iframes := doc.Find("iframe").Map(func(i int, s *goquery.Selection) string {
+		return s.AttrOr("src", "")
+	})
 
-	if err != nil {
-		return ""
-	}
-
-	defer episodePlayerResp.Body.Close()
-
-	doc, err = goquery.NewDocumentFromReader(episodePlayerResp.Body)
-
-	if err != nil {
-		return ""
-	}
-
-	iframes := doc.Find("iframe")
 	cdaPlayerLink := ""
 
-	for i := 0; i < iframes.Length(); i++ {
-		iframe := iframes.Eq(i)
-
-		if strings.Contains(iframe.AttrOr("src", ""), "cda") {
-			cdaPlayerLink = iframe.AttrOr("src", "")
+	for _, iframe := range iframes {
+		if strings.Contains(iframe, "cda.pl") {
+			cdaPlayerLink = iframe
 			break
 		}
 	}
 
 	if cdaPlayerLink == "" {
-		return ""
+		return "", errors.New("no cda player link found")
 	}
 
-	req, err = http.NewRequest("GET", cdaPlayerLink, nil)
+	doc, err = FetchAndParse(cdaPlayerLink, client)
 
 	if err != nil {
-		return ""
+		return "", errors.New("error parsing cda player page")
 	}
 
-	cdaPlayerResp, err := client.Do(req)
+	baseUrl, err = url.Parse(cdaPlayerLink)
 
 	if err != nil {
-		return ""
+		return "", err
 	}
 
-	defer cdaPlayerResp.Body.Close()
-
-	doc, err = goquery.NewDocumentFromReader(cdaPlayerResp.Body)
-
-	if err != nil {
-		return ""
-	}
-
-	playerId := strings.Split(cdaPlayerLink, "/")[2]
+	playerId := strings.Split(baseUrl.Path, "/")[2]
 
 	jsonRaw := doc.Find("#mediaplayer"+playerId).AttrOr("player_data", "")
 
-	var data map[string]Video
+	var data map[string]interface{}
 	if err := json.Unmarshal([]byte(jsonRaw), &data); err != nil {
-		return ""
+		return "", errors.New("error parsing json")
 	}
 
-	videoUrl := data["video"].File
+	videoUrl := data["video"].(map[string]interface{})["file"].(string)
 
-	fmt.Println(videoUrl)
-
-	return ""
+	return decodeFromCda(videoUrl), nil
 }
 
-func (ep *animeEp) Download(dir string, fileNum int, bar *prog.Bar) {
-	mediaUrl := ep.GetMediaURL()
+type StructWriter struct {
+	bar *prog.Bar
+}
 
-	if mediaUrl == "" {
-		return
+func (sw *StructWriter) Write(p []byte) (n int, err error) {
+	sw.bar.Set(sw.bar.Current() + len(p))
+	return len(p), nil
+}
+
+func (ep *animeEp) Download(dir string, fileNum int) error {
+	mediaUrl, err := ep.GetMediaURL()
+
+	if err != nil {
+		return err
 	}
 
 	resp, err := http.Get(mediaUrl)
 
 	if err != nil {
-		fmt.Println(err)
-		return
+		return err
 	}
+
+	bar := prog.AddBar(int(resp.ContentLength)).PrependCompleted().AppendElapsed()
 
 	defer resp.Body.Close()
 
 	out, err := os.Create(dir + "/" + ep.GetName(fileNum) + ".mp4")
 
 	if err != nil {
-		fmt.Println(err)
-		return
+		return err
 	}
 
 	defer out.Close()
 
-	_, err = io.Copy(out, resp.Body)
+	temp := &StructWriter{bar: bar}
+
+	_, err = io.Copy(io.MultiWriter(out, temp), resp.Body)
 
 	if err != nil {
-		fmt.Println(err)
-		return
+		return err
 	}
+
+	return nil
 }
 
-func getEpisodes(url string) ([]animeEp, error) {
-	req, err := http.NewRequest("GET", url, nil)
+func getEpisodes(seasonUrl string) ([]animeEp, error) {
+	req, err := http.NewRequest("GET", seasonUrl, nil)
 
 	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
+		return nil, err
 	}
 
 	client := &http.Client{}
@@ -259,6 +260,12 @@ func getEpisodes(url string) ([]animeEp, error) {
 
 	episodes := make([]animeEp, 0)
 
+	baseUrl, err := url.Parse(seasonUrl)
+
+	if err != nil {
+		return nil, err
+	}
+
 	for i := 0; i < episodeTable.Length(); i++ {
 
 		episodeRow := episodeTable.Eq(i).Find("a")
@@ -268,7 +275,7 @@ func getEpisodes(url string) ([]animeEp, error) {
 		epNameCleaned := QuoteRegex.FindString(epNameRaw)
 
 		episodes = append(episodes, animeEp{
-			url:  url + episodeRow.AttrOr("href", ""),
+			url:  baseUrl.Scheme + "://" + baseUrl.Host + "/" + episodeRow.AttrOr("href", ""),
 			name: epNameCleaned[1 : len(epNameCleaned)-1],
 			num:  episodeTable.Length() - i,
 		})
