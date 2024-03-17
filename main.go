@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"sync"
 	"time"
 
@@ -60,6 +61,13 @@ func main() {
 	startTime := time.Now()
 
 	for _, series := range chosenSeries {
+		seriesDir := dir
+
+		if len(chosenSeries) > 1 {
+			fmt.Println("Pobieram: " + series.name)
+			seriesDir = path.Join(dir, series.name)
+			os.Mkdir(path.Join(dir, series.name), fs.ModePerm)
+		}
 
 		prog.Start()
 		var wg sync.WaitGroup
@@ -77,7 +85,7 @@ func main() {
 			go func(ep animeEp) {
 				defer wg.Done()
 
-				err = ep.Download(dir, len(eps))
+				err = ep.Download(seriesDir, len(eps))
 
 				if err != nil {
 					fmt.Printf("Nie udało się pobrać odcinka, error: %v", err)
@@ -90,5 +98,5 @@ func main() {
 		prog.Stop()
 	}
 
-	fmt.Println("Zajęło: " + time.Now().Sub(startTime).String())
+	fmt.Println("Zajęło: " + time.Since(startTime).String())
 }
